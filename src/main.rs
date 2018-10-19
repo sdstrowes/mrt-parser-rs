@@ -5,7 +5,7 @@ use num_traits::cast::FromPrimitive;
 
 #[macro_use]
 extern crate nom;
-use nom::{be_u128, be_u16, be_u32, be_u8, ErrorKind, IResult};
+use nom::{be_u128, be_u16, be_u32, be_u8};
 
 extern crate flate2;
 use flate2::bufread::GzDecoder;
@@ -30,12 +30,7 @@ named!(pub parse_mrt_table_header<MRTHeader>,
         mrt_type:    be_u16 >>
         mrt_subtype: be_u16 >>
         length:      be_u32 >>
-        (MRTHeader {
-            timestamp:   timestamp,
-            mrt_type:    mrt_type,
-            mrt_subtype: mrt_subtype,
-            length:      length
-        })
+        (MRTHeader { timestamp, mrt_type, mrt_subtype, length })
     )
 );
 
@@ -120,16 +115,16 @@ named!(pub parse_mrt_table_dump_ipv4<MRTTableDumpIPv4>,
         attr_length:     be_u16 >>
         as_path:         take!(attr_length)        >>
     (MRTTableDumpIPv4 {
-        view_number:     view_number,
-        sequence_number: sequence_number,
+        view_number,
+        sequence_number,
         prefix:          Ipv4Addr::from(prefix),
-        prefix_length:   prefix_length,
-        status:          status,
-        originated_time: originated_time,
+        prefix_length,
+        status,
+        originated_time,
         peer_address:    Ipv4Addr::from(peer_address),
-        peer_asn:        peer_asn,
-        attr_length:     attr_length,
-        as_path:         as_path
+        peer_asn,
+        attr_length,
+        as_path
     })
     )
 );
@@ -161,16 +156,16 @@ named!(pub parse_mrt_table_dump_ipv6<MRTTableDumpIPv6>,
         attr_length:     be_u16 >>
         as_path:         take!(attr_length)        >>
     (MRTTableDumpIPv6 {
-        view_number:     view_number,
-        sequence_number: sequence_number,
+        view_number,
+        sequence_number,
         prefix:          Ipv6Addr::from(prefix),
-        prefix_length:   prefix_length,
-        status:          status,
-        originated_time: originated_time,
+        prefix_length,
+        status,
+        originated_time,
         peer_address:    Ipv6Addr::from(peer_address),
-        peer_asn:        peer_asn,
-        attr_length:     attr_length,
-        as_path:         as_path
+        peer_asn,
+        attr_length,
+        as_path
     })
     )
 );
@@ -201,11 +196,6 @@ enum TABLE_DUMP_V2_SubTypes {
     RIB_IPV6_UNICAST = 4,
     RIB_IPV6_MULTICAST = 5,
     RIB_GENERIC = 6,
-}
-
-struct TableDump {
-    view_number: u8,
-    sequence_num: u8,
 }
 
 fn parse_mrt_table_dump(header: MRTHeader, reader: &[u8]) -> ::std::result::Result<&[u8], String> {
