@@ -184,12 +184,12 @@ enum MRTType {
 }
 
 #[derive(Debug, FromPrimitive)]
-enum TABLE_DUMP_SubTypes {
+enum TableDumpSubtypes {
     AFI_IPv4 = 1,
     AFI_IPv6 = 2,
 }
 
-enum TABLE_DUMP_V2_SubTypes {
+enum TableDumpV2SubTypes {
     PEER_INDEX_TABLE = 1,
     RIB_IPV4_UNICAST = 2,
     RIB_IPV4_MULTICAST = 3,
@@ -199,13 +199,13 @@ enum TABLE_DUMP_V2_SubTypes {
 }
 
 fn parse_mrt_table_dump(header: MRTHeader, reader: &[u8]) -> ::std::result::Result<&[u8], String> {
-    match TABLE_DUMP_SubTypes::from_u16(header.mrt_subtype) {
-        Some(TABLE_DUMP_SubTypes::AFI_IPv4) => {
+    match TableDumpSubtypes::from_u16(header.mrt_subtype) {
+        Some(TableDumpSubtypes::AFI_IPv4) => {
             let result = parse_mrt_table_dump_ipv4(&reader).unwrap();
             println!("{}", result.1);
             return Ok(result.0);
         }
-        Some(TABLE_DUMP_SubTypes::AFI_IPv6) => {
+        Some(TableDumpSubtypes::AFI_IPv6) => {
             let result = parse_mrt_table_dump_ipv6(&reader).unwrap();
             println!("{:?}", result.1);
             return Ok(result.0);
@@ -235,7 +235,7 @@ fn main() -> Result<(), String> {
     loop {
         // nom returns IResults which are aliases for Result<(I, O), Err<I, E>>;
         // I: Remaining Input, O: Output, E: Error
-        let header = parse_mrt_table_header(&mut buffer).unwrap();
+        let header = parse_mrt_table_header(&buffer).unwrap();
 
         let result = header.1;
         println!("{:?}", result);
