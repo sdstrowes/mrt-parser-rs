@@ -1,3 +1,6 @@
+mod bgp;
+use bgp::{parse_bgp_path_attrs, BGPPathAttribute};
+
 #[macro_use]
 extern crate num_derive;
 extern crate num_traits;
@@ -12,8 +15,8 @@ use flate2::bufread::GzDecoder;
 use std::env;
 use std::fmt;
 use std::fs::File;
-use std::io::{BufReader, Read};
-use std::mem::{size_of, size_of_val};
+use std::io::{self, BufReader, BufWriter, Read, Stdout, Write};
+use std::mem::size_of;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::result::Result;
 
@@ -23,6 +26,37 @@ pub struct MRTHeader {
     mrt_type: u16,
     mrt_subtype: u16,
     length: u32,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, FromPrimitive)]
+enum MRTType {
+    OSPFv2 = 11,
+    TABLE_DUMP = 12,
+    TABLE_DUMP_V2 = 13,
+    BGP4MP = 16,
+    BGP4MP_ET = 17,
+    ISIS = 32,
+    ISIS_ET = 33,
+    OSPFv3 = 48,
+    OSPFv3_ET = 49,
+}
+#[allow(non_camel_case_types)]
+#[derive(Debug, FromPrimitive)]
+enum TableDumpSubtypes {
+    AFI_IPv4 = 1,
+    AFI_IPv6 = 2,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, FromPrimitive)]
+enum TableDumpV2Subtypes {
+    PEER_INDEX_TABLE = 1,
+    RIB_IPV4_UNICAST = 2,
+    RIB_IPV4_MULTICAST = 3,
+    RIB_IPV6_UNICAST = 4,
+    RIB_IPV6_MULTICAST = 5,
+    RIB_GENERIC = 6,
 }
 
 named!(pub parse_mrt_table_header<MRTHeader>,
@@ -35,7 +69,62 @@ named!(pub parse_mrt_table_header<MRTHeader>,
     )
 );
 
-// currently incomplete
+impl<'a> fmt::Display for MRTHeader {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match MRTType::from_u16(self.mrt_type) {
+            Some(MRTType::TABLE_DUMP) => {
+                write!(fmt, "TABLE_DUMP|");
+                match TableDumpSubtypes::from_u16(self.mrt_subtype) {
+                    Some(TableDumpSubtypes::AFI_IPv4) => {
+                        write!(fmt, "AFI_IPv4");
+                    }
+                    Some(TableDumpSubtypes::AFI_IPv6) => {
+                        write!(fmt, "AFI_IPv6");
+                    }
+                    _ => {
+                        write!(fmt, "Unhandled MRT TABLE_DUMP subtype {}", self.mrt_subtype);
+                    }
+                }
+            }
+            Some(MRTType::TABLE_DUMP_V2) => {
+                write!(fmt, "TABLE_DUMP_V2|");
+                match TableDumpV2Subtypes::from_u16(self.mrt_subtype) {
+                    Some(TableDumpV2Subtypes::PEER_INDEX_TABLE) => {
+                        write!(fmt, "PEER_INDEX_TABLE");
+                    }
+                    Some(TableDumpV2Subtypes::RIB_IPV4_UNICAST) => {
+                        write!(fmt, "RIB_IPV4_UNICAST");
+                    }
+                    Some(TableDumpV2Subtypes::RIB_IPV4_MULTICAST) => {
+                        write!(fmt, "RIB_IPV4_MULTICAST");
+                    }
+                    Some(TableDumpV2Subtypes::RIB_IPV6_UNICAST) => {
+                        write!(fmt, "RIB_IPV6_UNICAST");
+                    }
+                    Some(TableDumpV2Subtypes::RIB_IPV6_MULTICAST) => {
+                        write!(fmt, "RIB_IPV6_MULTICAST");
+                    }
+                    Some(TableDumpV2Subtypes::RIB_GENERIC) => {
+                        write!(fmt, "RIB_GENERIC");
+                    }
+                    _ => {
+                        write!(
+                            fmt,
+                            "Unhandled MRT TABLE_DUMP_V2 subtype {}",
+                            self.mrt_subtype
+                        );
+                    }
+                }
+            }
+            _ => {
+                write!(fmt, "Unhandled MRT Type {}", self.mrt_type);
+            }
+        }
+        write!(fmt, "|{}|", self.timestamp);
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct MRTTableDumpIPv4<'a> {
     view_number: u16,
@@ -171,55 +260,28 @@ named!(pub parse_mrt_table_dump_ipv6<MRTTableDumpIPv6>,
     )
 );
 
-#[derive(Debug, FromPrimitive)]
-enum MRTType {
-    OSPFv2 = 11,
-    TABLE_DUMP = 12,
-    TABLE_DUMP_V2 = 13,
-    BGP4MP = 16,
-    BGP4MP_ET = 17,
-    ISIS = 32,
-    ISIS_ET = 33,
-    OSPFv3 = 48,
-    OSPFv3_ET = 49,
-}
-
-#[derive(Debug, FromPrimitive)]
-enum TableDumpSubtypes {
-    AFI_IPv4 = 1,
-    AFI_IPv6 = 2,
-}
-
-#[derive(Debug, FromPrimitive)]
-enum TableDumpV2Subtypes {
-    PEER_INDEX_TABLE = 1,
-    RIB_IPV4_UNICAST = 2,
-    RIB_IPV4_MULTICAST = 3,
-    RIB_IPV6_UNICAST = 4,
-    RIB_IPV6_MULTICAST = 5,
-    RIB_GENERIC = 6,
-}
-
-fn parse_mrt_table_dump(header: MRTHeader, reader: &[u8]) -> ::std::result::Result<&[u8], String> {
+fn parse_mrt_table_dump<'a>(
+    out: &mut BufWriter<Stdout>,
+    header: MRTHeader,
+    reader: &'a [u8],
+) -> ::std::result::Result<&'a [u8], String> {
     match TableDumpSubtypes::from_u16(header.mrt_subtype) {
         Some(TableDumpSubtypes::AFI_IPv4) => {
             let result = parse_mrt_table_dump_ipv4(&reader).unwrap();
-            println!("{}", result.1);
+            writeln!(out, "{}", result.1);
             return Ok(result.0);
         }
         Some(TableDumpSubtypes::AFI_IPv6) => {
             let result = parse_mrt_table_dump_ipv6(&reader).unwrap();
-            println!("{:?}", result.1);
+            writeln!(out, "{:?}", result.1);
             return Ok(result.0);
         }
         _ => {
-            println!("Unhandled subtype {}", header.mrt_type);
+            writeln!(out, "Unhandled subtype {}", header.mrt_type);
         }
     }
     Err("No match".to_string())
 }
-
-
 
 //        0                   1                   2                   3
 //        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
@@ -246,7 +308,7 @@ pub struct MRTTableDumpV2PeerIndex<'a> {
     view_name_length: u8,
     view_name: &'a [u8],
     peer_count: u8,
-    peer_entries: &'a [u8]
+    peer_entries: &'a [u8],
 }
 
 named!(pub parse_mrt_table_dump_v2_peer_index<MRTTableDumpV2PeerIndex>,
@@ -260,40 +322,104 @@ named!(pub parse_mrt_table_dump_v2_peer_index<MRTTableDumpV2PeerIndex>,
     )
 );
 
+// RIB Entries
+#[derive(Debug)]
+pub struct RibEntry {
+    peer_index: u16,
+    originated_timestamp: u32,
+    attr_length: u16,
+    bgp_path_attrs: Vec<BGPPathAttribute>,
+}
+
+fn parse_rib_entry(input: &[u8]) -> IResult<&[u8], RibEntry> {
+    do_parse!(
+        input,
+        peer_index: be_u16
+            >> originated_timestamp: be_u32
+            >> attr_length: be_u16
+            >> bgp_path_attrs: call!(parse_bgp_path_attrs, attr_length)
+            >> (RibEntry {
+                peer_index,
+                originated_timestamp,
+                attr_length,
+                bgp_path_attrs
+            })
+    )
+}
+
+impl fmt::Display for RibEntry {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        for i in &self.bgp_path_attrs {
+            write!(fmt, "|{}", i);
+        }
+        Ok(())
+    }
+}
+
+named_args!( parse_rib_entries(entry_count: u16)< Vec<RibEntry> >,
+    count!( parse_rib_entry, entry_count as usize )
+);
+
 #[derive(Debug)]
 pub struct MRTTableDumpV2IPv4Unicast<'b> {
     sequence_number: u32,
     prefix_length: u8,
     prefix: &'b [u8],
     entry_count: u16,
-    rib_entries: &'b [u8],
+    rib_entries: Vec<RibEntry>,
+}
+
+fn make_addr(prefix: &[u8]) -> Ipv4Addr {
+    let mut prefix_u32: u32 = 0;
+    for i in 0..prefix.len() {
+        prefix_u32 |= (prefix[i] as u32) << (24 - 8 * i);
+    }
+    let outputaddr = Ipv4Addr::from(prefix_u32);
+    outputaddr
+}
+
+impl<'a> fmt::Display for MRTTableDumpV2IPv4Unicast<'a> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        let prefix = format!("{}/{}", make_addr(self.prefix), self.prefix_length);
+
+        let line_prefix = format!("{:08x}|{}|", self.sequence_number, String::from(prefix));
+        for i in &self.rib_entries {
+            write!(fmt, "\n{} {}", line_prefix, i);
+        }
+        Ok(())
+    }
 }
 
 fn prefix_octet_count(prefix_length: u8) -> u32 {
-    u32::from((prefix_length+7)/8)
+    u32::from((prefix_length + 7) / 8)
 }
-
 
 // I had to break out of the macro here because it was grouching about lifetimes.
 //named_args!(pub parse_mrt_table_dump_v2_ipv4_unicast<'a>(header: &'a MRTHeader)<MRTTableDumpV2IPv4Unicast>,
 //
 // This is ugly but the number of bytes for this part of the message is:
 // length specific in header - sizeof(sequence_num) - sizeof(prefix_length) - prefix_octet_count - sizeof(entry_count)
-fn parse_mrt_table_dump_v2_ipv4_unicast<'a>(input: &'a [u8], header: &MRTHeader) -> IResult<&'a [u8], MRTTableDumpV2IPv4Unicast<'a>> {
-    do_parse!(input,
-        sequence_number: be_u32 >>
-        prefix_length:   be_u8  >>
-        prefix:          take!(prefix_octet_count(prefix_length)) >>
-        entry_count:     be_u16 >>
-        rib_entries:     take!(header.length - (size_of::<u32>() as u32) - (size_of::<u8>() as u32) - prefix_octet_count(prefix_length) - (size_of::<u16>() as u32))  >>
-    (MRTTableDumpV2IPv4Unicast {
-        sequence_number,
-        prefix_length,
-        prefix,
-        entry_count,
-        rib_entries
-    })
-)
+//rib_entries:     take!(header.length - (size_of::<u32>() as u32) - (size_of::<u8>() as u32) - prefix_octet_count(prefix_length) - (size_of::<u16>() as u32))  >>
+//rib_entries:     parse_rib_entry(input, header.length - (size_of::<u32>() as u32) - (size_of::<u8>() as u32) - prefix_octet_count(prefix_length) - (size_of::<u16>() as u32), entry_count) >>
+fn parse_mrt_table_dump_v2_ipv4_unicast<'a>(
+    input: &'a [u8],
+    header: &MRTHeader,
+) -> IResult<&'a [u8], MRTTableDumpV2IPv4Unicast<'a>> {
+    do_parse!(
+        input,
+        sequence_number: be_u32
+            >> prefix_length: be_u8
+            >> prefix: take!(prefix_octet_count(prefix_length))
+            >> entry_count: be_u16
+            >> rib_entries: call!(parse_rib_entries, entry_count)
+            >> (MRTTableDumpV2IPv4Unicast {
+                sequence_number,
+                prefix_length,
+                prefix,
+                entry_count,
+                rib_entries
+            })
+    )
 }
 
 #[derive(Debug)]
@@ -306,24 +432,39 @@ pub struct MRTTableDumpV2IPv6Unicast<'a> {
 }
 
 //named!(pub parse_mrt_table_dump_v2_ipv6_unicast<MRTTableDumpV2IPv6Unicast>,
-fn parse_mrt_table_dump_v2_ipv6_unicast<'a>(input: &'a [u8], header: &MRTHeader) -> IResult<&'a [u8], MRTTableDumpV2IPv6Unicast<'a>> {
-    do_parse!(input,
-        sequence_number: be_u32 >>
-        prefix_length:   be_u8  >>
-        prefix:          take!(prefix_octet_count(prefix_length)) >>
-        entry_count:     be_u16  >>
-        rib_entries:     take!(header.length - (size_of::<u32>() as u32) - (size_of::<u8>() as u32) - prefix_octet_count(prefix_length) - (size_of::<u16>() as u32))  >>
-    (MRTTableDumpV2IPv6Unicast {
-        sequence_number,
-        prefix_length,
-        prefix,
-        entry_count,
-        rib_entries
-    })
+fn parse_mrt_table_dump_v2_ipv6_unicast<'a>(
+    input: &'a [u8],
+    header: &MRTHeader,
+) -> IResult<&'a [u8], MRTTableDumpV2IPv6Unicast<'a>> {
+    do_parse!(
+        input,
+        sequence_number: be_u32
+            >> prefix_length: be_u8
+            >> prefix: take!(prefix_octet_count(prefix_length))
+            >> entry_count: be_u16
+            >> rib_entries:
+                take!(
+                    header.length
+                        - (size_of::<u32>() as u32)
+                        - (size_of::<u8>() as u32)
+                        - prefix_octet_count(prefix_length)
+                        - (size_of::<u16>() as u32)
+                )
+            >> (MRTTableDumpV2IPv6Unicast {
+                sequence_number,
+                prefix_length,
+                prefix,
+                entry_count,
+                rib_entries
+            })
     )
 }
 
-fn parse_mrt_table_dump_v2(header: MRTHeader, reader: &[u8]) -> ::std::result::Result<&[u8], String> {
+fn parse_mrt_table_dump_v2<'a>(
+    out: &mut BufWriter<Stdout>,
+    header: MRTHeader,
+    reader: &'a [u8],
+) -> ::std::result::Result<&'a [u8], String> {
     match TableDumpV2Subtypes::from_u16(header.mrt_subtype) {
         Some(TableDumpV2Subtypes::PEER_INDEX_TABLE) => {
             //let result = parse_mrt_table_dump_v2_peer_index(&reader)
@@ -332,7 +473,7 @@ fn parse_mrt_table_dump_v2(header: MRTHeader, reader: &[u8]) -> ::std::result::R
         }
         Some(TableDumpV2Subtypes::RIB_IPV4_UNICAST) => {
             let result = parse_mrt_table_dump_v2_ipv4_unicast(&reader, &header).unwrap();
-            //println!("{:?}", result.1);
+            writeln!(out, "{}", result.1);
             return Ok(result.0);
         }
         Some(TableDumpV2Subtypes::RIB_IPV4_MULTICAST) => {
@@ -340,7 +481,7 @@ fn parse_mrt_table_dump_v2(header: MRTHeader, reader: &[u8]) -> ::std::result::R
         }
         Some(TableDumpV2Subtypes::RIB_IPV6_UNICAST) => {
             let result = parse_mrt_table_dump_v2_ipv6_unicast(&reader, &header).unwrap();
-            println!("{:?}", result.1);
+            writeln!(out, "{:?}", result.1);
             return Ok(result.0);
         }
         Some(TableDumpV2Subtypes::RIB_IPV6_MULTICAST) => {
@@ -350,7 +491,7 @@ fn parse_mrt_table_dump_v2(header: MRTHeader, reader: &[u8]) -> ::std::result::R
             return Err("TABLE_DUMP_V2 subtype RIB_GENERIC not implemented".to_string());
         }
         _ => {
-            println!("Unhandled subtype {}", header.mrt_type);
+            writeln!(out, "Unhandled subtype {}", header.mrt_type);
         }
     }
     Err("No match".to_string())
@@ -371,27 +512,29 @@ fn main() -> Result<(), String> {
     f.read_to_end(&mut buffer).expect("Cannot read file!");
     let mut buffer = buffer.as_slice();
 
+    let a = io::stdout();
+    //let mut stdout = a.lock();
+    let mut stdout = BufWriter::new(a);
+
     loop {
         // nom returns IResults which are aliases for Result<(I, O), Err<I, E>>;
         // I: Remaining Input, O: Output, E: Error
         let header = parse_mrt_table_header(&buffer).unwrap();
 
         let result = header.1;
-        println!("{:?}", result);
+        writeln!(stdout, "{}", result);
 
         buffer = header.0;
 
         match MRTType::from_u16(result.mrt_type) {
-            Some(MRTType::TABLE_DUMP) => {
-                match parse_mrt_table_dump(result, buffer) {
-                    Ok(a) => {
-                        buffer = a;
-                    }
-                    Err(_err) => {}
+            Some(MRTType::TABLE_DUMP) => match parse_mrt_table_dump(&mut stdout, result, buffer) {
+                Ok(a) => {
+                    buffer = a;
                 }
-            }
+                Err(_err) => {}
+            },
             Some(MRTType::TABLE_DUMP_V2) => {
-                match parse_mrt_table_dump_v2(result, buffer) {
+                match parse_mrt_table_dump_v2(&mut stdout, result, buffer) {
                     Ok(a) => {
                         buffer = a;
                     }
@@ -399,7 +542,7 @@ fn main() -> Result<(), String> {
                 }
             }
             _ => {
-                println!("Unhandled type {}", result.mrt_type);
+                writeln!(stdout, "Unhandled type {}", result.mrt_type);
             }
         }
     }
