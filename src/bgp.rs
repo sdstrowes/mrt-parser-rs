@@ -1,3 +1,4 @@
+extern crate hex;
 use nom::{be_u16, be_u8, IResult};
 use num_traits::cast::FromPrimitive;
 use std::fmt;
@@ -261,3 +262,65 @@ pub fn parse_bgp_path_attrs(
 
     Ok((input, results))
 }
+
+
+#[test]
+fn parse_good_test() {
+    
+//00 01        <-- peer index
+//4c 39 56 0a  <-- orig_ts
+//00 25        <-- attr length (37)
+//  
+//4:  40 01 [01] 00
+//26: 50 02 [00 16] 02 05 00 00 a4 7d 00  00 a3 ed 00 00 a3 95 00 00 51 23 00 00 0d 1c
+//7:  40 03 [04] 5b 67 18 02
+//      
+    //let buffer = hex::decode("0x00014c39560a0025400101005002001602050000a47d0000a3ed0000a3950000512300000d1c4003045b671802");
+    let buffer = hex::decode("400101005002001602050000a47d0000a3ed0000a3950000512300000d1c4003045b671802").unwrap();
+    let buffer = buffer.as_slice();
+    println!("{:?}", buffer);
+
+    let result = parse_bgp_path_attrs(buffer, 37).unwrap().1;
+    
+    let mut res = Vec::new();
+    res.push(
+        BGPPathAttribute{ flags: 0x40, code: 0x01, len: 0x01, data: vec![0x00] } );
+    res.push( BGPPathAttribute{ flags: 0x50, code: 0x02, len: 0x16, data: vec![0x02, 0x05, 0x00, 0x00, 0xa4, 0x7d, 0x00, 0x00, 0xa3, 0xed, 0x00, 0x00, 0xa3, 0x95, 0x00, 0x00, 0x51, 0x23, 0x00, 0x00, 0x0d, 0x1c] } );
+    res.push( BGPPathAttribute{ flags: 0x40, code: 0x03, len: 0x04, data: vec![0x5b, 0x67, 0x18, 0x02] } );
+
+    //assert_eq!( result, (CompleteByteSlice(b""), res) );
+    assert_eq!( result, res );
+}
+
+#[test]
+fn parse_good_test_long_buffer() {
+
+//00 01        <-- peer index
+//4c 39 56 0a  <-- orig_ts
+//00 25        <-- attr length (37)
+//
+//4:  40 01 [01] 00
+//26: 50 02 [00 16] 02 05 00 00 a4 7d 00  00 a3 ed 00 00 a3 95 00 00 51 23 00 00 0d 1c
+//7:  40 03 [04] 5b 67 18 02
+//
+    //let buffer = hex::decode("0x00014c39560a0025400101005002001602050000a47d0000a3ed0000a3950000512300000d1c4003045b671802");
+    let buffer = hex::decode("400101005002001602050000a47d0000a3ed0000a3950000512300000d1c4003045b6718020000").unwrap();
+    let buffer = buffer.as_slice();
+    println!("{:?}", buffer);
+
+    let result = parse_bgp_path_attrs(buffer, 37);
+    let tmp = result.unwrap();
+    println!("{:?} {:?}", buffer, tmp.0);
+
+    let mut res = Vec::new();
+    res.push(
+        BGPPathAttribute{ flags: 0x40, code: 0x01, len: 0x01, data: vec![0x00] } );
+    res.push( BGPPathAttribute{ flags: 0x50, code: 0x02, len: 0x16, data: vec![0x02, 0x05, 0x00, 0x00, 0xa4, 0x7d, 0x00, 0x00, 0xa3, 0xed, 0x00, 0x00, 0xa3, 0x95, 0x00, 0x00, 0x51, 0x23, 0x00, 0x00, 0x0d, 0x1c] } );
+    res.push( BGPPathAttribute{ flags: 0x40, code: 0x03, len: 0x04, data: vec![0x5b, 0x67, 0x18, 0x02] } );
+
+
+    //assert_eq!( result, (CompleteByteSlice(b""), res) );
+    assert_eq!( tmp.1, res );
+}
+
+

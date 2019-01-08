@@ -5,6 +5,7 @@ authors = ["Stephen D. Strowes <sdstrowes@gmail.com>"]
 
 [dependencies]
 flate2 = "1.0"
+hex = "0.3.2"
 num-traits = "0.2"
 num-derive = "0.2"
 nom = "^4.1"
